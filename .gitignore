@@ -1,0 +1,19 @@
+# WireGuard configs contain private keys — never commit them.
+# Templates ending in .example.conf are the exception.
+*.conf
+!*.example.conf
+
+# Compiled binaries / cross-compiled artifacts
+/wiretunnel
+/wiretunnel.exe
+wiretunnel-*
+*.exe
+
+# Go test/coverage output
+*.test
+*.out
+coverage.*
+
+# OS / editor cruft
+.DS_Store
+*.swp
