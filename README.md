@@ -47,16 +47,18 @@ on macOS and Windows.
 
 ## Build
 
+Binaries build into `bin/`, which is git-ignored.
+
 ```sh
-# Build for the current platform → ./wiretunnel (or wiretunnel.exe on Windows)
-go build -o wiretunnel .
+# Build for the current platform → ./bin/wiretunnel
+go build -o bin/wiretunnel .
 
 # Cross-compile (Go makes this trivial; set GOOS/GOARCH):
-GOOS=windows GOARCH=amd64 go build -o wiretunnel.exe .      # Windows x64
-GOOS=windows GOARCH=arm64 go build -o wiretunnel-arm64.exe . # Windows ARM
-GOOS=darwin  GOARCH=arm64 go build -o wiretunnel-mac-arm .   # Apple Silicon
-GOOS=darwin  GOARCH=amd64 go build -o wiretunnel-mac-x64 .   # Intel Mac
-GOOS=linux   GOARCH=amd64 go build -o wiretunnel-linux .     # Linux x64
+GOOS=windows GOARCH=amd64 go build -o bin/wiretunnel-windows-amd64.exe .
+GOOS=windows GOARCH=arm64 go build -o bin/wiretunnel-windows-arm64.exe .
+GOOS=darwin  GOARCH=arm64 go build -o bin/wiretunnel-darwin-arm64 .
+GOOS=darwin  GOARCH=amd64 go build -o bin/wiretunnel-darwin-amd64 .
+GOOS=linux   GOARCH=amd64 go build -o bin/wiretunnel-linux-amd64 .
 ```
 
 The Windows build is a **console** executable and enables ANSI/VT processing
@@ -105,11 +107,11 @@ the tunnel's port 22 and forwards it to the local SSH server.
 ## Usage
 
 ```sh
-./wiretunnel                      # uses wiretunnel.conf + tunnel.json
-./wiretunnel -wg my.conf -rules forwards.json
-./wiretunnel -tui                 # live dashboard (below)
-./wiretunnel -ping 10.0.0.1   # connectivity test over the tunnel, then exit
-./wiretunnel -v                   # verbose (includes wireguard-go device logs)
+./bin/wiretunnel                      # uses wiretunnel.conf + tunnel.json
+./bin/wiretunnel -wg my.conf -rules forwards.json
+./bin/wiretunnel -tui                 # live dashboard (below)
+./bin/wiretunnel -ping 10.0.0.1       # connectivity test over the tunnel, then exit
+./bin/wiretunnel -v                   # verbose (includes wireguard-go device logs)
 ```
 
 | flag      | default             | meaning                                                   |

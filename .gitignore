@@ -3,10 +3,9 @@
 *.conf
 !*.example.conf
 
-# Compiled binaries / cross-compiled artifacts
+# Compiled binaries — build into ./bin/ (ignored). Also catch stray root builds.
+/bin/
 /wiretunnel
-/wiretunnel.exe
-wiretunnel-*
 *.exe
 
 # Go test/coverage output
