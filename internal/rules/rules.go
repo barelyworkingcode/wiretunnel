@@ -91,10 +91,31 @@ func (fa *ForwardAll) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
+// defaultWebSSHPort is the tunnel port the browser terminal listens on when the
+// rules file does not specify one.
+const defaultWebSSHPort = 8022
+
 // Config is the parsed rules file.
 type Config struct {
 	ForwardAll ForwardAll `json:"forwardAll"`
 	Forwards   []Forward  `json:"forwards"`
+
+	// WebSSH toggles the in-tunnel browser terminal. It is a *bool so an omitted
+	// key defaults to enabled (nil), while an explicit "webSSH": false disables
+	// it. Use WebSSHEnabled rather than reading this directly.
+	WebSSH *bool `json:"webSSH"`
+	// Hostname is the browser-facing hostname for the terminal: the TLS SAN and
+	// the WebAuthn relying-party ID. Empty means "use the OS hostname".
+	Hostname string `json:"hostname"`
+	// WebSSHPort is the tunnel port the terminal is served on; 0 means the
+	// default (8022).
+	WebSSHPort int `json:"webSSHPort,omitempty"`
+}
+
+// WebSSHEnabled reports whether the browser terminal should run. It is on
+// unless the rules file explicitly sets "webSSH": false.
+func (c *Config) WebSSHEnabled() bool {
+	return c.WebSSH == nil || *c.WebSSH
 }
 
 // ParseFile reads and parses the rules JSON at path.
@@ -125,8 +146,16 @@ func (c *Config) validate() error {
 	if c.ForwardAll.Enabled && c.ForwardAll.Target == "" {
 		c.ForwardAll.Target = "127.0.0.1"
 	}
-	if len(c.Forwards) == 0 && !c.ForwardAll.Enabled {
-		return fmt.Errorf("no forwards defined (set forwards or enable forwardAll)")
+	if c.WebSSHPort == 0 {
+		c.WebSSHPort = defaultWebSSHPort
+	}
+	if !validPort(c.WebSSHPort) {
+		return fmt.Errorf("webSSHPort %d out of range 1-65535", c.WebSSHPort)
+	}
+	// The browser terminal counts as something to serve, so a webSSH-only config
+	// (no forwards, no forwardAll) is valid.
+	if len(c.Forwards) == 0 && !c.ForwardAll.Enabled && !c.WebSSHEnabled() {
+		return fmt.Errorf("nothing to do: no forwards, no forwardAll, and webSSH is disabled")
 	}
 	seen := make(map[string]bool, len(c.Forwards))
 	for i, f := range c.Forwards {
@@ -145,6 +174,11 @@ func (c *Config) validate() error {
 		}
 		if f.Target == "" {
 			return fmt.Errorf("forward %d: missing target", i)
+		}
+		// webSSH binds the tunnel's webSSHPort itself; a TCP forward on the same
+		// port would race it for the listener, so reject the collision up front.
+		if c.WebSSHEnabled() && f.Proto == TCP && f.Listen == c.WebSSHPort {
+			return fmt.Errorf("forward %d: tcp listen port %d collides with webSSH (change webSSHPort or the forward, or disable webSSH)", i, f.Listen)
 		}
 		key := string(f.Proto) + ":" + strconv.Itoa(f.Listen)
 		if seen[key] {

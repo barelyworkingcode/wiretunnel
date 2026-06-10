@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/barelyworkingcode/wiretunnel/internal/proxy"
+	"github.com/barelyworkingcode/wiretunnel/internal/tunnel"
 )
 
 // ANSI control sequences. Windows enables VT processing in enableVirtualTerminal.
@@ -20,9 +21,11 @@ const (
 )
 
 // runDashboard renders a live view of proxy activity once per second until ctx
-// is cancelled. lastEvent supplies the most recent warning/error to show in the
-// footer (it may be nil).
-func runDashboard(ctx context.Context, p *proxy.Proxy, tunnelAddr string, lastEvent *lastEventHandler) {
+// is cancelled. t supplies live WireGuard peer stats for the header; websshURL
+// is the browser-terminal address shown there, or "" when webssh is disabled.
+// lastEvent supplies the most recent warning/error to show in the footer (it
+// may be nil).
+func runDashboard(ctx context.Context, p *proxy.Proxy, t *tunnel.Tunnel, tunnelAddr, websshURL string, lastEvent *lastEventHandler) {
 	enableVirtualTerminal() // no-op on non-Windows
 
 	fmt.Fprint(os.Stdout, ansiHideCursor)
@@ -47,7 +50,8 @@ func runDashboard(ctx context.Context, p *proxy.Proxy, tunnelAddr string, lastEv
 		if dt <= 0 {
 			dt = 1
 		}
-		frame := buildFrame(cur, prev, dt, now.Sub(start), tunnelAddr, wildcard, lastEvent)
+		peers, _ := t.Peers() // best-effort; an empty slice just omits the peer lines
+		frame := buildFrame(cur, prev, dt, now.Sub(start), now, peers, tunnelAddr, websshURL, wildcard, lastEvent)
 		prev, prevAt = cur, now
 		fmt.Fprint(os.Stdout, ansiHome+frame+ansiClearBelow)
 	}
@@ -64,12 +68,35 @@ func runDashboard(ctx context.Context, p *proxy.Proxy, tunnelAddr string, lastEv
 }
 
 // buildFrame renders one dashboard frame. cur/prev are snapshots dt seconds
-// apart (for per-forward rates); uptime drives the average rates. wildcard is the
-// catch-all target, or "" when wildcard forwarding is off.
-func buildFrame(cur, prev []proxy.ForwardSnapshot, dt float64, uptime time.Duration, tunnelAddr, wildcard string, lastEvent *lastEventHandler) string {
+// apart (for per-forward rates); uptime drives the average rates; now timestamps
+// peer handshake ages. peers are the live WireGuard peers (may be empty).
+// websshURL is the browser-terminal address (or "" when disabled); wildcard is
+// the catch-all target, or "" when wildcard forwarding is off.
+func buildFrame(cur, prev []proxy.ForwardSnapshot, dt float64, uptime time.Duration, now time.Time, peers []tunnel.PeerStat, tunnelAddr, websshURL, wildcard string, lastEvent *lastEventHandler) string {
 	var b strings.Builder
 
-	fmt.Fprintf(&b, "  wiretunnel — %-22s uptime %s\n\n", tunnelAddr, humanDuration(uptime))
+	fmt.Fprintf(&b, "  wiretunnel — %-22s uptime %s\n", tunnelAddr, humanDuration(uptime))
+	if websshURL != "" {
+		fmt.Fprintf(&b, "  webssh    %s  (tunnel-only)\n", websshURL)
+	}
+	for _, pr := range peers {
+		endpoint := pr.Endpoint
+		if endpoint == "" {
+			endpoint = "(no endpoint)"
+		}
+		handshake := "never"
+		if !pr.LastHandshake.IsZero() {
+			handshake = humanShort(now.Sub(pr.LastHandshake)) + " ago"
+		}
+		status := "down"
+		if pr.Connected(now) {
+			status = "up"
+		}
+		fmt.Fprintf(&b, "  peer      %-21s %-4s handshake %-9s ↑ %s ↓ %s\n",
+			truncate(endpoint, 21), status, handshake,
+			humanBytes(float64(pr.TxBytes)), humanBytes(float64(pr.RxBytes)))
+	}
+	fmt.Fprint(&b, "\n")
 	fmt.Fprintf(&b, "  %-7s %-6s %-24s %6s  %12s  %12s\n", "PORT", "PROTO", "TARGET", "CONNS", "UP/s", "DOWN/s")
 	fmt.Fprintf(&b, "  %s\n", strings.Repeat("-", 73))
 
@@ -165,6 +192,22 @@ func humanRate(bytesPerSec float64) string {
 func humanDuration(d time.Duration) string {
 	s := int(d.Seconds())
 	return fmt.Sprintf("%02d:%02d:%02d", s/3600, (s%3600)/60, s%60)
+}
+
+// humanShort formats a duration compactly for the "handshake … ago" readout:
+// "23s", "4m", "1h2m". A negative duration (clock skew) reads as 0s.
+func humanShort(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	default:
+		return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
+	}
 }
 
 func truncate(s string, max int) string {

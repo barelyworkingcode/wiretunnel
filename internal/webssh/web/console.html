@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="dark" />
+  <title>WebSSH — Sessions</title>
+  <style>
+    :root { color-scheme: dark; }
+    html, body { margin: 0; min-height: 100%; background: #0b0e14; color: #cdd6f4; font-family: ui-sans-serif, system-ui, sans-serif; }
+    .wrap { max-width: 920px; margin: 0 auto; padding: 28px 20px 48px; }
+    header { display: flex; align-items: center; gap: 12px; }
+    header .logo { font-size: 24px; }
+    h1 { font-size: 20px; margin: 0; letter-spacing: .3px; }
+    .sub { color: #8b94a7; font-size: 13px; margin: 8px 0 20px; }
+    .bar { display: flex; align-items: center; gap: 10px; margin-bottom: 18px; flex-wrap: wrap; }
+    .spacer { flex: 1; }
+    .muted { color: #8b94a7; font-size: 13px; }
+    .cert-link { color: #6c7086; text-decoration: none; font-size: 13px; margin-left: 16px; }
+    .cert-link:hover { color: #89b4fa; text-decoration: underline; }
+    button { appearance: none; border: 0; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; transition: background .15s ease; }
+    .btn-primary { background: #4c7cf3; color: #fff; padding: 9px 14px; }
+    .btn-primary:hover { background: #3d68d8; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { padding: 11px 12px; border-bottom: 1px solid #1c2333; text-align: left; vertical-align: middle; }
+    th { color: #8b94a7; font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .5px; }
+    td.id { font-family: ui-monospace, Menlo, Consolas, monospace; }
+    td.num { text-align: right; font-variant-numeric: tabular-nums; }
+    .badge { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+    .badge.busy { background: rgba(243,166,87,.16); color: #f3a657; }
+    .badge.idle { background: rgba(139,148,167,.16); color: #9aa3b6; }
+    .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+    td.actions { text-align: right; white-space: nowrap; }
+    a.join, button.kill { border-radius: 7px; padding: 7px 12px; font-size: 13px; font-weight: 600; text-decoration: none; display: inline-block; }
+    a.join { background: #1c2333; color: #cdd6f4; border: 1px solid #2a3550; margin-right: 8px; }
+    a.join:hover { background: #232c42; }
+    button.kill { background: transparent; color: #f38ba8; border: 1px solid #532330; }
+    button.kill:hover { background: rgba(243,139,168,.12); }
+    button.kill:disabled { opacity: .5; cursor: default; }
+    .empty { text-align: center; color: #8b94a7; padding: 44px 0; }
+    .gate-card {
+      max-width: 380px; margin: 56px auto; padding: 30px 32px; text-align: center;
+      background: #11151f; border: 1px solid #232a3b; border-radius: 12px;
+      box-shadow: 0 20px 60px rgba(0,0,0,.5);
+    }
+    .gate-card .logo { font-size: 26px; margin-bottom: 12px; }
+    .gate-card h2 { font-size: 18px; margin: 0 0 6px; letter-spacing: .3px; }
+    .gate-card p { color: #8b94a7; font-size: 13px; line-height: 1.5; margin: 0 0 22px; }
+    .gate-card button.btn-primary { width: 100%; padding: 12px 16px; font-size: 15px; }
+    .gate-card .msg { margin-top: 14px; font-size: 13px; min-height: 18px; }
+    .gate-card .msg.error { color: #f38ba8; }
+    .error { color: #f38ba8; }
+
+    /* --- shortcuts ------------------------------------------------------ */
+    .shortcuts { margin: 4px 0 30px; }
+    .sc-head { display: flex; align-items: center; gap: 12px; }
+    .sc-head h2 { font-size: 15px; margin: 0; letter-spacing: .3px; }
+    .sc-head .spacer { flex: 1; }
+    .sc-hint { color: #8b94a7; font-size: 12px; margin: 6px 0 14px; }
+    .btn-ghost { background: #1c2333; color: #cdd6f4; border: 1px solid #2a3550; padding: 7px 12px; font-size: 13px; }
+    .btn-ghost:hover { background: #232c42; }
+    .sc-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
+    .sc-empty { color: #8b94a7; font-size: 13px; padding: 6px 0 2px; }
+    .sc-card { background: #11151f; border: 1px solid #232a3b; border-radius: 10px; padding: 12px 14px; display: flex; flex-direction: column; gap: 9px; }
+    .sc-name { font-weight: 600; font-size: 14px; word-break: break-word; }
+    .sc-cmd { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; color: #9aa3b6; background: #0b0e14; border: 1px solid #1c2333; border-radius: 6px; padding: 7px 9px; white-space: pre-wrap; word-break: break-word; max-height: 66px; overflow: auto; }
+    .sc-actions { display: flex; gap: 8px; margin-top: 1px; }
+    .sc-actions button { border-radius: 7px; padding: 7px 10px; font-size: 13px; font-weight: 600; }
+    .sc-run { background: #2f9e63; color: #fff; flex: 1; }
+    .sc-run:hover { background: #2a8c58; }
+    .sc-edit { background: #1c2333; color: #cdd6f4; border: 1px solid #2a3550; }
+    .sc-edit:hover { background: #232c42; }
+    .sc-del { background: transparent; color: #f38ba8; border: 1px solid #532330; }
+    .sc-del:hover { background: rgba(243,139,168,.12); }
+    /* edit/add form, shown in place of the list while editing */
+    .sc-form { background: #11151f; border: 1px solid #232a3b; border-radius: 10px; padding: 16px; max-width: 520px; }
+    .sc-form label { display: block; font-size: 12px; color: #8b94a7; margin: 0 0 5px; }
+    .sc-form .field { margin-bottom: 14px; }
+    .sc-form input, .sc-form textarea {
+      width: 100%; box-sizing: border-box; background: #0b0e14; color: #cdd6f4;
+      border: 1px solid #2a3550; border-radius: 7px; padding: 9px 11px; font-size: 14px;
+    }
+    .sc-form textarea { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 13px; resize: vertical; min-height: 64px; }
+    .sc-form input:focus, .sc-form textarea:focus { outline: none; border-color: #4c7cf3; }
+    .sc-form .row { display: flex; align-items: center; gap: 10px; margin-top: 2px; }
+    .sc-form .msg { font-size: 13px; min-height: 18px; }
+    .sc-form .msg.error { color: #f38ba8; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div class="logo">▮</div>
+      <h1>WebSSH Sessions</h1>
+    </header>
+    <div class="sub" id="summary">Loading…</div>
+    <div class="bar" id="bar">
+      <button class="btn-primary" id="new-session" type="button">+ New session</button>
+      <span class="spacer"></span>
+      <span class="muted" id="status"></span>
+      <a class="cert-link" href="/cert">Certificate setup</a>
+    </div>
+    <section class="shortcuts" id="shortcuts" hidden>
+      <div class="sc-head">
+        <h2>Shortcuts</h2>
+        <span class="spacer"></span>
+        <button class="btn-ghost" id="sc-add" type="button">+ Add shortcut</button>
+      </div>
+      <div class="sc-hint">One-click commands stored on this machine. Running one opens a new terminal tab.</div>
+      <div id="sc-body"></div>
+    </section>
+    <div id="content"></div>
+  </div>
+  <script src="/passkey.js"></script>
+  <script src="/console.js"></script>
+</body>
+</html>

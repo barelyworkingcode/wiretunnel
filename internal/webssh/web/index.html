@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="dark" />
+  <title>WebSSH</title>
+  <link rel="stylesheet" href="/vendor/xterm.css" />
+  <style>
+    :root { color-scheme: dark; }
+    html, body { height: 100%; margin: 0; background: #0b0e14; color: #cdd6f4; font-family: ui-sans-serif, system-ui, sans-serif; }
+    /* touch-action: none lets app.js own vertical drags for scrollback (see
+       setupTouchScroll) instead of the browser panning/zooming the page. */
+    #terminal { position: absolute; inset: 0; padding: 6px; touch-action: none; }
+    #overlay {
+      position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+      background: radial-gradient(1200px 600px at 50% -10%, #1a2030, #0b0e14); z-index: 10;
+    }
+    #overlay.hidden { display: none; }
+    .card {
+      background: #11151f; border: 1px solid #232a3b; border-radius: 12px; padding: 32px 36px;
+      width: min(420px, 90vw); box-shadow: 0 20px 60px rgba(0,0,0,.5); text-align: center;
+    }
+    .card h1 { font-size: 20px; margin: 0 0 6px; letter-spacing: .3px; }
+    .card p { color: #8b94a7; font-size: 14px; line-height: 1.5; margin: 0 0 22px; }
+    button {
+      appearance: none; border: 0; border-radius: 8px; padding: 12px 18px; width: 100%;
+      font-size: 15px; font-weight: 600; cursor: pointer; background: #4c7cf3; color: #fff;
+      transition: background .15s ease;
+    }
+    button:hover { background: #3d68d8; }
+    button:disabled { opacity: .6; cursor: default; }
+    .msg { margin-top: 16px; font-size: 13px; min-height: 18px; }
+    .msg.error { color: #f38ba8; }
+    .logo { font-size: 28px; margin-bottom: 14px; }
+    .cert-hint { margin-top: 18px; font-size: 12px; }
+    .cert-hint a { color: #6c7086; text-decoration: none; }
+    .cert-hint a:hover { color: #89b4fa; text-decoration: underline; }
+
+    /* Live round-trip latency readout (top-right), revealed once measured. */
+    #latency {
+      position: fixed; top: 6px; right: 8px; z-index: 30; display: none;
+      font: 11px/1.4 ui-monospace, Menlo, Consolas, monospace;
+      color: #6c7086; background: rgba(17,21,31,.65);
+      padding: 1px 7px; border-radius: 6px; pointer-events: none; letter-spacing: .2px;
+    }
+    #latency.show { display: block; }
+    #latency.stale { opacity: .4; }
+
+    /* On-screen key bar for touch devices (shown via JS). */
+    #keybar {
+      position: fixed; left: 0; right: 0; bottom: 0; z-index: 20;
+      display: none; gap: 6px; padding: 6px;
+      padding-bottom: calc(6px + env(safe-area-inset-bottom, 0px));
+      background: #11151f; border-top: 1px solid #232a3b;
+    }
+    #keybar.show { display: flex; }
+    #keybar button {
+      flex: 1; width: auto; padding: 11px 0; font-size: 14px; font-weight: 600;
+      border-radius: 7px; background: #1c2333; color: #cdd6f4; border: 1px solid #2a3550;
+      touch-action: manipulation; transition: none;
+      /* A press-and-hold (used for Shift+Tab) must not raise the text-selection
+         callout/magnifier on iOS, which would swallow the gesture. */
+      user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+    }
+    #keybar button:hover { background: #1c2333; }
+    #keybar button.active { background: #4c7cf3; color: #fff; border-color: #4c7cf3; }
+  </style>
+</head>
+<body>
+  <div id="terminal"></div>
+  <div id="latency"></div>
+  <div id="overlay">
+    <div class="card">
+      <div class="logo">▮</div>
+      <h1 id="title">WebSSH</h1>
+      <p id="subtitle">Checking access…</p>
+      <button id="action" style="display:none"></button>
+      <div id="message" class="msg"></div>
+      <div class="cert-hint"><a href="/cert">Trouble connecting? Set up the certificate →</a></div>
+    </div>
+  </div>
+  <div id="keybar">
+    <button id="key-esc" type="button">Esc</button>
+    <button id="mod-ctrl" type="button">Ctrl</button>
+    <button id="mod-alt" type="button">Opt</button>
+    <button id="key-tab" type="button" title="Tap: Tab · Hold: Shift+Tab">Tab</button>
+  </div>
+  <script src="/vendor/xterm.js"></script>
+  <script src="/vendor/addon-fit.js"></script>
+  <script src="/passkey.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

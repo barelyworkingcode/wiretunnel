@@ -3,6 +3,10 @@
 *.conf
 !*.example.conf
 
+# DPAPI-sealed configs are host-bound ciphertext, but still host-specific and
+# not meant for the repo.
+*.dpapi
+
 # Compiled binaries — build into ./bin/ (ignored). Also catch stray root builds.
 /bin/
 /wiretunnel
@@ -12,6 +16,11 @@
 *.test
 *.out
 coverage.*
+
+# webssh TLS material and passkey store. These normally live in the OS config
+# dir (<UserConfigDir>/wiretunnel/), but guard against in-tree generation.
+*.pem
+store.json
 
 # OS / editor cruft
 .DS_Store

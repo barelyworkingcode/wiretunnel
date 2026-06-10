@@ -20,6 +20,10 @@ it to verify connectivity.
   port on `127.0.0.1`, so the rules file only carries the exceptions.
 - **Answers ping** — the tunnel address replies to ICMP echo.
 - **Built-in connectivity test** — `-ping` pings any host over the tunnel.
+- **Browser terminal** — an optional [in-tunnel webssh](#browser-terminal-webssh): an
+  xterm.js shell (plus a session console) served *inside* the WireGuard stack, so it is
+  reachable **only over the tunnel** — never on `0.0.0.0` or `localhost`. Passkey-gated,
+  HTTPS with a self-signed CA generated on first run.
 - **Live dashboard** — `-tui` shows connections, targets, and throughput.
 - **Graceful shutdown** — `Ctrl-C` closes listeners and in-flight connections.
 
@@ -83,6 +87,48 @@ Copy [`wiretunnel.example.conf`](wiretunnel.example.conf) to your own
 `.conf` and fill in real keys. Real configs are git-ignored — **never commit a
 file containing a private key**.
 
+#### Sealing the config to a host (Windows)
+
+A plaintext config leaves the WireGuard private key readable by anyone who can
+pull the file off the machine — and that key, copied elsewhere, lets them join
+your network from their own box. On Windows you can **seal** the config so it is
+bound to this host and can only be unsealed here:
+
+```sh
+# Seal wiretunnel.conf -> wiretunnel.conf.dpapi (bound to this machine + account)
+wiretunnel -seal wiretunnel.conf
+
+# Then delete the plaintext and point -wg at the sealed file
+del wiretunnel.conf
+wiretunnel -wg wiretunnel.conf.dpapi
+```
+
+Sealing uses Windows **DPAPI** (`CryptProtectData`). The on-disk file is
+ciphertext with no recoverable key material; `wiretunnel` unseals it in memory at
+startup, so no flag or passphrase is needed at run time. Two bindings:
+
+| `-scope`        | unsealable by…                                   |
+|-----------------|--------------------------------------------------|
+| `user` (default)| **this Windows account on this machine only**    |
+| `machine`       | any account on this machine                      |
+
+Use the default `user` scope when the account that seals the file is the same
+one that runs the service — the common case. Use `machine` when whoever enrolls
+the file is not the account that will later run `wiretunnel`.
+
+**What this protects, and what it does not.** Copying the sealed file to another
+machine (or, under `user` scope, opening it as another account) fails — the file
+is dead off this host. That defeats the "sysadmin pulls the file and reuses the
+key elsewhere" threat. It does **not** defend against an attacker with live
+administrative control of *this running machine*: the WireGuard handshake needs
+the key in plaintext in process memory, so such an attacker can read it there or
+simply run `wiretunnel`, which unseals by design. Contain that residual risk at
+the network layer — least-privilege `AllowedIPs` on the server side and
+short-lived/rotated keys — not with file encryption.
+
+> Sealing is Windows-only; on macOS/Linux `-seal` reports that DPAPI is
+> unavailable. A plaintext `-wg` config keeps working everywhere.
+
 ### 2. Forwarding rules (`-rules`, default `tunnel.json`)
 
 JSON expansion of the shorthand `{ port, proto, target }`:
@@ -142,11 +188,34 @@ When `forwardAll` is enabled, the `forwards` list may be empty (or omitted).
 > allowlist; `forwardAll` removes that boundary. Enable it only where that blast
 > radius is acceptable, and scope `AllowedIPs` to the peers you trust.
 
+#### Browser-terminal keys (`webSSH`, `hostname`, `webSSHPort`)
+
+The same `tunnel.json` also configures the built-in [browser terminal](#browser-terminal-webssh):
+
+```json
+{
+  "webSSH": true,
+  "hostname": "baaqmd-devbox",
+  "forwardAll": true
+}
+```
+
+| key          | default        | meaning                                                              |
+|--------------|----------------|----------------------------------------------------------------------|
+| `webSSH`     | `true`         | serve the browser terminal over the tunnel; set `false` to disable   |
+| `hostname`   | OS hostname    | browser-facing name — the TLS SAN and the passkey relying-party ID   |
+| `webSSHPort` | `8022`         | tunnel port the terminal is served on (`https://<hostname>:<port>`)  |
+
+A TCP `forward` on the same port as `webSSHPort` is rejected at load time, since the
+terminal binds that port itself. (A UDP forward on it is fine — the terminal is TCP-only.)
+
 ## Usage
 
 ```sh
 ./bin/wiretunnel                      # uses wiretunnel.conf + tunnel.json
 ./bin/wiretunnel -wg my.conf -rules forwards.json
+./bin/wiretunnel -wg my.conf.dpapi    # sealed config (Windows; see Sealing above)
+./bin/wiretunnel -seal my.conf        # one-shot: seal a config to this host, then exit
 ./bin/wiretunnel -tui                 # live dashboard (below)
 ./bin/wiretunnel -ping 10.0.0.1       # connectivity test over the tunnel, then exit
 ./bin/wiretunnel -v                   # verbose (includes wireguard-go device logs)
@@ -154,8 +223,11 @@ When `forwardAll` is enabled, the `forwards` list may be empty (or omitted).
 
 | flag      | default             | meaning                                                   |
 |-----------|---------------------|-----------------------------------------------------------|
-| `-wg`     | `wiretunnel.conf` | WireGuard config file                                     |
+| `-wg`     | `wiretunnel.conf` | WireGuard config file (plaintext or DPAPI-sealed)         |
 | `-rules`  | `tunnel.json`       | forwarding rules file                                     |
+| `-seal`   | (none)              | seal the given plaintext config to this host and exit     |
+| `-out`    | `<config>.dpapi`    | output path for `-seal`                                   |
+| `-scope`  | `user`              | `-seal` binding: `user` (machine+account) or `machine`    |
 | `-tui`    | off                 | show the live dashboard instead of log lines              |
 | `-ping`   | (none)              | bring the tunnel up, ping a host over it, print, and exit |
 | `-v`      | off                 | verbose logging                                           |
@@ -166,6 +238,8 @@ When `forwardAll` is enabled, the `forwards` list may be empty (or omitted).
 
 ```
   wiretunnel — 10.0.0.2         uptime 00:04:12
+  webssh    https://baaqmd-devbox:8022  (tunnel-only)
+  peer      203.0.113.5:51820     up   handshake 23s ago   ↑ 1.4 MB ↓ 96.0 MB
 
   PORT    PROTO  TARGET                    CONNS          UP/s        DOWN/s
   -------------------------------------------------------------------------
@@ -183,6 +257,8 @@ When `forwardAll` is enabled, the `forwards` list may be empty (or omitted).
   Ctrl-C to quit
 ```
 
+The header shows the live WireGuard `peer` line(s) — endpoint, `up`/`down` from the last
+handshake, handshake age, and bytes transferred — plus the `webssh` URL when enabled.
 `UP/s` is traffic from the tunnel client toward the target; `DOWN/s` is the
 reply direction. `now` is the last second; `avg` is the average since start.
 Explicit forwards are listed first; ports discovered through the catch-all are
@@ -213,6 +289,56 @@ from the machine running `wiretunnel`. It responds to pings two ways:
 > mapping toward this host can expire and the peer won't reach the forwarded
 > ports.
 
+## Browser terminal (webssh)
+
+When `webSSH` is enabled (the default), wiretunnel also serves a browser terminal — an
+xterm.js shell that drops you straight into a local PowerShell session, plus an admin
+console at `/console` to list, join, and kill sessions. It supports image paste/drag-drop,
+clickable links, an on-screen key bar for touch devices, and a live round-trip latency
+readout.
+
+**It is reachable only over the tunnel — structurally, not by convention.** The HTTP server
+is bound directly to the in-process WireGuard netstack (`ListenTCP` on the tunnel address),
+so **no host socket is ever opened**. There is nothing listening on `0.0.0.0`, `127.0.0.1`,
+or any host interface; `netstat` on the box shows no port 8022. The only path in is a peer
+on the WireGuard network reaching `https://<hostname>:8022`. Because the listener is an
+explicit netstack endpoint, it also takes precedence over `forwardAll` for that port.
+
+### First run — it sets itself up
+
+On first start the server generates everything it needs and reuses it thereafter:
+
+- a self-signed **CA + leaf certificate chain** (Firefox/NSS-compatible: a real CA that
+  *signs* the leaf, so it can be trusted as an authority rather than a one-off exception),
+  written to `<UserConfigDir>/wiretunnel/{cert,key,ca}.pem`. The leaf's SANs cover the
+  `hostname`, `localhost`, loopback, and the **tunnel address**, so HTTPS validates however
+  you reach the box over the tunnel.
+
+The **one** manual step is client-side and unavoidable for any self-signed setup: each
+browser must trust that CA once. The server hosts a **setup page** with the download and
+step-by-step Firefox/Chrome instructions:
+
+```
+https://<hostname>:8022/cert        # instructions + download
+https://<hostname>:8022/webssh-ca.pem   # the CA file directly
+```
+
+The terminal and console link to `/cert`, and a browser that reaches the server in an
+insecure context (untrusted certificate) is redirected there automatically.
+
+### Access control
+
+Access is HTTPS-only and gated by a **passkey (WebAuthn)** for defense in depth on top of
+the tunnel. The first visitor enrolls a passkey; every visit thereafter requires it. (The
+tunnel is already the access boundary — `AllowedIPs` decides who can even reach the
+listener — so the passkey is a second factor, not the only one.) Because WebAuthn anchors
+the credential to a hostname, set `hostname` in `tunnel.json` to a name your client resolves
+to the tunnel address (e.g. `baaqmd-devbox`); an IP won't work as a passkey relying-party.
+
+> **Tip.** Disable it entirely with `"webSSH": false`. The TLS material and passkey store
+> live outside the repo in `<UserConfigDir>/wiretunnel/`; delete `store.json` to start
+> passkey enrollment over, or the `*.pem` files to regenerate the certificate.
+
 ## Testing
 
 ```sh
@@ -222,10 +348,12 @@ go test -short ./...   # skips the end-to-end tunnel test
 ```
 
 The suite includes config/rules parsing, the relay and byte counters, the
-dashboard formatters, and an **end-to-end test** that stands up two userspace
-WireGuard devices over localhost and verifies TCP forwarding, UDP forwarding,
-catch-all (wildcard) forwarding, ICMP echo replies, live metrics, and graceful
-shutdown — no privileges or external connectivity required.
+dashboard formatters, the webssh server (cert generation, HTTPS serving, the
+session redirect, the passkey gate) and its PTY/websocket terminal, and an
+**end-to-end test** that stands up two userspace WireGuard devices over
+localhost and verifies TCP forwarding, UDP forwarding, catch-all (wildcard)
+forwarding, ICMP echo replies, live metrics, and graceful shutdown — no
+privileges or external connectivity required.
 
 ## Security & acceptable use
 
@@ -240,8 +368,14 @@ Other notes:
 
 - Forwarded ports are exposed to every peer that can reach the tunnel address —
   scope your `AllowedIPs` and forwarding rules to what you actually need.
+- The browser terminal grants an interactive shell to anyone who can reach the
+  tunnel address *and* presents the passkey. The tunnel address and `AllowedIPs`
+  are the real boundary; the passkey is a second factor on top. Disable it with
+  `"webSSH": false` where you don't want it.
 - Keys live in the WireGuard config file; protect it with appropriate file
-  permissions and never commit real keys to source control.
+  permissions and never commit real keys to source control. On Windows you can
+  also **seal** the config to the host so a copied file is useless elsewhere —
+  see [Sealing the config to a host](#sealing-the-config-to-a-host-windows).
 
 ## License
 
@@ -257,8 +391,14 @@ events.go               last-warning/error capture for the dashboard footer
 vt_windows.go           enables ANSI/VT processing on Windows
 vt_other.go             no-op on macOS/Linux
 internal/wgconf/        wg-quick config -> wireguard-go UAPI
-internal/rules/         forwarding rules JSON (incl. forwardAll catch-all)
+internal/seal/          DPAPI host-binding for the config (Windows; no-op elsewhere)
+internal/rules/         forwarding rules JSON (incl. forwardAll catch-all, webSSH keys)
 internal/tunnel/        userspace WireGuard device + netstack
 internal/proxy/         per-rule listeners, catch-all forwarder, relays, metrics
+internal/webssh/        browser terminal served on the netstack (tunnel-only)
+  ├─ terminal/          PTY sessions, websocket bridge, image paste, session console
+  ├─ auth/              passkey (WebAuthn) enrollment + session gate
+  ├─ tlscert/           self-signed CA + leaf generated on first run (Firefox-compatible)
+  └─ web/               xterm.js frontend, console page, cert-setup page, vendored assets
 e2e_test.go             two-device end-to-end tunnel test
 ```

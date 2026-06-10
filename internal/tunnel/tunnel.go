@@ -8,6 +8,9 @@ package tunnel
 import (
 	"fmt"
 	"log/slog"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/barelyworkingcode/wiretunnel/internal/wgconf"
 	"golang.zx2c4.com/wireguard/conn"
@@ -70,4 +73,80 @@ func (t *Tunnel) Up() error {
 func (t *Tunnel) Close() error {
 	t.dev.Close()
 	return nil
+}
+
+// PeerStat is a point-in-time view of one WireGuard peer, surfaced to the live
+// dashboard so the operator can see whether the tunnel is actually connected.
+type PeerStat struct {
+	Endpoint      string    // current peer endpoint host:port, empty until known
+	LastHandshake time.Time // zero if the peer has never completed a handshake
+	RxBytes       int64     // bytes received from the peer
+	TxBytes       int64     // bytes sent to the peer
+}
+
+// Connected reports whether a recent handshake suggests the tunnel is live. A
+// WireGuard handshake is renewed at least every ~2 minutes on an active
+// session, so a handshake within 3 minutes is treated as connected.
+func (p PeerStat) Connected(now time.Time) bool {
+	return !p.LastHandshake.IsZero() && now.Sub(p.LastHandshake) < 3*time.Minute
+}
+
+// Peers returns live statistics for every configured WireGuard peer by querying
+// the device's UAPI. It is cheap enough to call once per dashboard frame.
+func (t *Tunnel) Peers() ([]PeerStat, error) {
+	uapi, err := t.dev.IpcGet()
+	if err != nil {
+		return nil, err
+	}
+	return parsePeers(uapi), nil
+}
+
+// parsePeers extracts per-peer stats from wireguard-go's UAPI "get" output. Each
+// peer block begins with a public_key line; the handshake timestamp arrives as
+// split sec/nsec fields, and a zero timestamp means "never handshaked".
+func parsePeers(uapi string) []PeerStat {
+	var peers []PeerStat
+	var cur *PeerStat
+	var hsSec, hsNano int64
+
+	flush := func() {
+		if cur == nil {
+			return
+		}
+		if hsSec != 0 || hsNano != 0 {
+			cur.LastHandshake = time.Unix(hsSec, hsNano)
+		}
+		peers = append(peers, *cur)
+		cur, hsSec, hsNano = nil, 0, 0
+	}
+
+	for _, line := range strings.Split(uapi, "\n") {
+		key, val, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if !ok {
+			continue
+		}
+		switch key {
+		case "public_key":
+			flush() // end the previous peer before starting this one
+			cur = &PeerStat{}
+		case "endpoint":
+			if cur != nil {
+				cur.Endpoint = val
+			}
+		case "last_handshake_time_sec":
+			hsSec, _ = strconv.ParseInt(val, 10, 64)
+		case "last_handshake_time_nsec":
+			hsNano, _ = strconv.ParseInt(val, 10, 64)
+		case "tx_bytes":
+			if cur != nil {
+				cur.TxBytes, _ = strconv.ParseInt(val, 10, 64)
+			}
+		case "rx_bytes":
+			if cur != nil {
+				cur.RxBytes, _ = strconv.ParseInt(val, 10, 64)
+			}
+		}
+	}
+	flush()
+	return peers
 }

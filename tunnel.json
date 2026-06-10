@@ -1,4 +1,6 @@
 {
+  "webSSH": true,
+  "hostname": "baaqmd-devbox",
   "forwardAll": true,
   "forwards": [
     { "listen": 1433, "proto": "tcp", "target": "db.internal", "targetPort": 1433 }

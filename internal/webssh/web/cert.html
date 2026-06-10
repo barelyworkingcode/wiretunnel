@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="dark" />
+  <title>WebSSH — Certificate setup</title>
+  <style>
+    :root { color-scheme: dark; }
+    html, body { margin: 0; min-height: 100%; background: #0b0e14; color: #cdd6f4; font-family: ui-sans-serif, system-ui, sans-serif; }
+    .wrap { max-width: 720px; margin: 0 auto; padding: 32px 22px 56px; }
+    header { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
+    header .logo { font-size: 24px; }
+    h1 { font-size: 21px; margin: 0; letter-spacing: .3px; }
+    p { color: #aab2c5; font-size: 14px; line-height: 1.6; }
+    .lead { color: #8b94a7; margin: 6px 0 24px; }
+    .card { background: #11151f; border: 1px solid #232a3b; border-radius: 12px; padding: 22px 24px; margin: 18px 0; }
+    .card h2 { font-size: 15px; margin: 0 0 12px; letter-spacing: .3px; }
+    a.btn {
+      display: inline-block; text-decoration: none; border-radius: 9px; padding: 13px 20px;
+      font-size: 15px; font-weight: 700; background: #4c7cf3; color: #fff; transition: background .15s ease;
+    }
+    a.btn:hover { background: #3d68d8; }
+    code, .mono { font-family: ui-monospace, Menlo, Consolas, monospace; background: #0d1018; border: 1px solid #1c2333; border-radius: 5px; padding: 1px 6px; font-size: 13px; color: #cdd6f4; }
+    ol { padding-left: 20px; margin: 8px 0 0; }
+    ol li { margin: 7px 0; font-size: 14px; line-height: 1.55; color: #cdd6f4; }
+    .muted { color: #8b94a7; }
+    .links { margin-top: 26px; font-size: 14px; }
+    .links a { color: #89b4fa; text-decoration: none; }
+    .links a:hover { text-decoration: underline; }
+    .note { background: rgba(76,124,243,.10); border: 1px solid #2a3550; border-radius: 9px; padding: 12px 14px; font-size: 13px; color: #aab2c5; margin-top: 18px; }
+    .step-host { color: #a6e3a1; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div class="logo">▮</div>
+      <h1>Certificate setup</h1>
+    </header>
+    <p class="lead">
+      This terminal is served over HTTPS with a private certificate authority generated on
+      the server. Trust that authority once, per browser, and the connection to
+      <span class="mono" id="host">this host</span> is secure with no warnings — which is also
+      required for passkey sign-in to work.
+    </p>
+
+    <div class="card" style="text-align:center">
+      <a class="btn" href="/webssh-ca.pem" download>⬇ Download the CA certificate</a>
+      <p class="muted" style="margin:14px 0 0">Saves <span class="mono">webssh-ca.pem</span>. Import it as a trusted <em>authority</em> (not a personal certificate).</p>
+    </div>
+
+    <div class="card">
+      <h2>Firefox</h2>
+      <ol>
+        <li>Open <code>about:preferences#privacy</code> and scroll to <b>Certificates</b> → <b>View Certificates…</b></li>
+        <li>On the <b>Authorities</b> tab, click <b>Import…</b> and choose the downloaded <span class="mono">webssh-ca.pem</span>.</li>
+        <li>Check <b>“Trust this CA to identify websites.”</b> and click <b>OK</b>.</li>
+        <li>Reload this page — the lock should be clean and passkeys will work.</li>
+      </ol>
+    </div>
+
+    <div class="card">
+      <h2>Chrome / Edge (Windows)</h2>
+      <ol>
+        <li>Open <code>certmgr.msc</code> (Windows certificate manager).</li>
+        <li>Right-click <b>Trusted Root Certification Authorities → Certificates</b> → <b>All Tasks → Import…</b></li>
+        <li>Select <span class="mono">webssh-ca.pem</span> and finish the wizard, leaving the store as <b>Trusted Root Certification Authorities</b>.</li>
+        <li>Fully quit and reopen the browser, then reload this page.</li>
+      </ol>
+    </div>
+
+    <div class="note">
+      You only need to do this once per browser. The certificate is local to this machine and
+      only vouches for this server; it can’t be used to intercept any other site.
+    </div>
+
+    <div class="links">
+      <a href="/">← Back to the terminal</a> &nbsp;·&nbsp; <a href="/console">Session console</a>
+    </div>
+  </div>
+  <script>
+    // Show the actual host in the instructions so the page reads naturally.
+    document.getElementById("host").textContent = location.host;
+  </script>
+</body>
+</html>

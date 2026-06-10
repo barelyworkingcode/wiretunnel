@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/barelyworkingcode/wiretunnel/internal/proxy"
+	"github.com/barelyworkingcode/wiretunnel/internal/tunnel"
 )
 
 // TestBuildFrameWildcard checks that a dynamically-discovered wildcard port is
@@ -21,8 +22,23 @@ func TestBuildFrameWildcard(t *testing.T) {
 		{Listen: 8080, Proto: "tcp", Target: "127.0.0.1:8080", Wildcard: true, Active: 2, BytesUp: 1100, BytesDown: 200},
 	}
 
-	frame := buildFrame(cur, prev, 1.0, time.Minute, "10.0.0.2", "127.0.0.1", nil)
+	now := time.Unix(1_000_000, 0)
+	peers := []tunnel.PeerStat{
+		{Endpoint: "203.0.113.5:51820", LastHandshake: now.Add(-23 * time.Second), TxBytes: 1234, RxBytes: 5678},
+	}
+	frame := buildFrame(cur, prev, 1.0, time.Minute, now, peers, "10.0.0.2", "https://devbox:8022", "127.0.0.1", nil)
 
+	if !strings.Contains(frame, "webssh    https://devbox:8022  (tunnel-only)") {
+		t.Errorf("webssh header line missing:\n%s", frame)
+	}
+	// The peer line shows the endpoint, an "up" status (handshake within 3m),
+	// and the compact handshake age.
+	if !strings.Contains(frame, "peer      203.0.113.5:51820") {
+		t.Errorf("peer endpoint line missing:\n%s", frame)
+	}
+	if !strings.Contains(frame, "up") || !strings.Contains(frame, "23s ago") {
+		t.Errorf("peer status/handshake age missing:\n%s", frame)
+	}
 	if !strings.Contains(frame, "8080*") {
 		t.Errorf("wildcard port not marked with *:\n%s", frame)
 	}
