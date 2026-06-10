@@ -70,8 +70,10 @@ func run() error {
 	}
 	defer t.Close()
 
-	for _, addr := range wcfg.Addresses {
-		log.Info("tunnel up", "address", addr.String(), "mtu", wcfg.MTU, "ping", "enabled")
+	logUp := func() {
+		for _, addr := range wcfg.Addresses {
+			log.Info("tunnel up", "address", addr.String(), "mtu", wcfg.MTU, "ping", "enabled")
+		}
 	}
 
 	// Connectivity self-test mode: ping a host over the tunnel and exit.
@@ -80,6 +82,10 @@ func run() error {
 		if err != nil {
 			return fmt.Errorf("invalid -ping address %q: %w", *pingTarget, err)
 		}
+		if err := t.Up(); err != nil {
+			return err
+		}
+		logUp()
 		return pingOverTunnel(t.Net, wcfg.Addresses[0], target, 4)
 	}
 
@@ -88,15 +94,27 @@ func run() error {
 		return fmt.Errorf("load rules %q: %w", *rulesPath, err)
 	}
 
+	// Bind listeners and install the catch-all handler before the device comes
+	// up, so the stack is fully wired before any packet is processed.
 	p := proxy.New(t.Net, log)
 	if err := p.Start(ctx, rcfg.Forwards); err != nil {
 		return fmt.Errorf("start proxy: %w", err)
 	}
+	if rcfg.ForwardAll.Enabled {
+		if err := p.StartWildcard(ctx, rcfg.ForwardAll.Target); err != nil {
+			return fmt.Errorf("start wildcard forwarding: %w", err)
+		}
+	}
+
+	if err := t.Up(); err != nil {
+		return err
+	}
+	logUp()
 
 	if *tuiMode {
 		runDashboard(ctx, p, wcfg.Addresses[0].String(), events)
 	} else {
-		log.Info("ready", "forwards", len(rcfg.Forwards))
+		log.Info("ready", "forwards", len(rcfg.Forwards), "wildcard", rcfg.ForwardAll.Enabled)
 		<-ctx.Done()
 		log.Info("shutting down")
 	}

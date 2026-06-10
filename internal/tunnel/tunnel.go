@@ -22,9 +22,11 @@ type Tunnel struct {
 	Net *netstack.Net
 }
 
-// Start creates the netstack TUN, configures the WireGuard device from cfg, and
-// brings it up. When verbose is true, wireguard-go's own device logs are
-// emitted; otherwise only errors are logged.
+// Start creates the netstack TUN and configures the WireGuard device from cfg,
+// but does NOT bring it up — call Up once any listeners and stack handlers are in
+// place, so the device only starts processing packets after the proxy is fully
+// wired. When verbose is true, wireguard-go's own device logs are emitted;
+// otherwise only errors are logged.
 func Start(cfg *wgconf.Config, log *slog.Logger, verbose bool) (*Tunnel, error) {
 	if len(cfg.Addresses) == 0 {
 		return nil, fmt.Errorf("config has no interface address")
@@ -50,13 +52,18 @@ func Start(cfg *wgconf.Config, log *slog.Logger, verbose bool) (*Tunnel, error) 
 		dev.Close()
 		return nil, fmt.Errorf("apply device config: %w", err)
 	}
-	if err := dev.Up(); err != nil {
-		dev.Close()
-		return nil, fmt.Errorf("bring device up: %w", err)
-	}
 
-	log.Debug("wireguard device up", "addresses", cfg.Addresses, "mtu", cfg.MTU, "peers", len(cfg.Peers))
+	log.Debug("wireguard device configured", "addresses", cfg.Addresses, "mtu", cfg.MTU, "peers", len(cfg.Peers))
 	return &Tunnel{dev: dev, Net: tnet}, nil
+}
+
+// Up brings the WireGuard device up so it begins processing packets. Install any
+// netstack handlers (e.g. the proxy's wildcard forwarder) before calling it.
+func (t *Tunnel) Up() error {
+	if err := t.dev.Up(); err != nil {
+		return fmt.Errorf("bring device up: %w", err)
+	}
+	return nil
 }
 
 // Close shuts the WireGuard device down.

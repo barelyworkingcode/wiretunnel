@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -30,6 +31,12 @@ func runDashboard(ctx context.Context, p *proxy.Proxy, tunnelAddr string, lastEv
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 
+	wildTarget, wildEnabled := p.Wildcard()
+	wildcard := ""
+	if wildEnabled {
+		wildcard = wildTarget
+	}
+
 	start := time.Now()
 	prev := p.Snapshot()
 	prevAt := start
@@ -40,7 +47,7 @@ func runDashboard(ctx context.Context, p *proxy.Proxy, tunnelAddr string, lastEv
 		if dt <= 0 {
 			dt = 1
 		}
-		frame := buildFrame(cur, prev, dt, now.Sub(start), tunnelAddr, lastEvent)
+		frame := buildFrame(cur, prev, dt, now.Sub(start), tunnelAddr, wildcard, lastEvent)
 		prev, prevAt = cur, now
 		fmt.Fprint(os.Stdout, ansiHome+frame+ansiClearBelow)
 	}
@@ -57,24 +64,39 @@ func runDashboard(ctx context.Context, p *proxy.Proxy, tunnelAddr string, lastEv
 }
 
 // buildFrame renders one dashboard frame. cur/prev are snapshots dt seconds
-// apart (for per-forward rates); uptime drives the average rates.
-func buildFrame(cur, prev []proxy.ForwardSnapshot, dt float64, uptime time.Duration, tunnelAddr string, lastEvent *lastEventHandler) string {
+// apart (for per-forward rates); uptime drives the average rates. wildcard is the
+// catch-all target, or "" when wildcard forwarding is off.
+func buildFrame(cur, prev []proxy.ForwardSnapshot, dt float64, uptime time.Duration, tunnelAddr, wildcard string, lastEvent *lastEventHandler) string {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, "  wiretunnel — %-22s uptime %s\n\n", tunnelAddr, humanDuration(uptime))
 	fmt.Fprintf(&b, "  %-7s %-6s %-24s %6s  %12s  %12s\n", "PORT", "PROTO", "TARGET", "CONNS", "UP/s", "DOWN/s")
 	fmt.Fprintf(&b, "  %s\n", strings.Repeat("-", 73))
 
+	// Match by (proto, port) rather than slice index: wildcard rows are discovered
+	// at runtime, so a new port appearing would otherwise misattribute every rate
+	// below it for one frame.
+	prevByKey := make(map[string]proxy.ForwardSnapshot, len(prev))
+	for _, f := range prev {
+		prevByKey[snapKey(f)] = f
+	}
+
 	var totalActive, totalConns, totalUp, totalDown int64
 	var nowUp, nowDown float64
-	for i, f := range cur {
+	var anyWild bool
+	for _, f := range cur {
 		upRate, downRate := 0.0, 0.0
-		if i < len(prev) {
-			upRate = float64(f.BytesUp-prev[i].BytesUp) / dt
-			downRate = float64(f.BytesDown-prev[i].BytesDown) / dt
+		if pf, ok := prevByKey[snapKey(f)]; ok {
+			upRate = float64(f.BytesUp-pf.BytesUp) / dt
+			downRate = float64(f.BytesDown-pf.BytesDown) / dt
 		}
-		fmt.Fprintf(&b, "  %-7d %-6s %-24s %6d  %12s  %12s\n",
-			f.Listen, f.Proto, truncate(f.Target, 24), f.Active, humanRate(upRate), humanRate(downRate))
+		port := strconv.Itoa(f.Listen)
+		if f.Wildcard {
+			port += "*"
+			anyWild = true
+		}
+		fmt.Fprintf(&b, "  %-7s %-6s %-24s %6d  %12s  %12s\n",
+			port, f.Proto, truncate(f.Target, 24), f.Active, humanRate(upRate), humanRate(downRate))
 
 		totalActive += f.Active
 		totalConns += f.Total
@@ -84,6 +106,11 @@ func buildFrame(cur, prev []proxy.ForwardSnapshot, dt float64, uptime time.Durat
 		nowDown += downRate
 	}
 
+	if wildcard != "" {
+		fmt.Fprintf(&b, "  %-7s %-6s %-24s %6s  %12s  %12s\n",
+			"*", "tcp+udp", truncate(wildcard+":*", 24), "", "", "")
+	}
+
 	secs := uptime.Seconds()
 	avgUp, avgDown := 0.0, 0.0
 	if secs > 0 {
@@ -91,6 +118,9 @@ func buildFrame(cur, prev []proxy.ForwardSnapshot, dt float64, uptime time.Durat
 		avgDown = float64(totalDown) / secs
 	}
 
+	if anyWild {
+		fmt.Fprint(&b, "\n  * dynamic port served by the catch-all (wildcard) forward\n")
+	}
 	fmt.Fprintf(&b, "\n  connections   active %d   total %d\n", totalActive, totalConns)
 	fmt.Fprintf(&b, "  throughput    now  ↑ %-11s ↓ %-11s\n", humanRate(nowUp), humanRate(nowDown))
 	fmt.Fprintf(&b, "                avg  ↑ %-11s ↓ %-11s\n", humanRate(avgUp), humanRate(avgDown))
@@ -103,6 +133,12 @@ func buildFrame(cur, prev []proxy.ForwardSnapshot, dt float64, uptime time.Durat
 	}
 	fmt.Fprint(&b, "\n  Ctrl-C to quit\n")
 	return b.String()
+}
+
+// snapKey identifies a forward row across frames by protocol and tunnel port,
+// which is stable even as wildcard rows come and go.
+func snapKey(f proxy.ForwardSnapshot) string {
+	return f.Proto + ":" + strconv.Itoa(f.Listen)
 }
 
 // humanBytes formats a byte count as a human-readable size.

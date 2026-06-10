@@ -66,3 +66,56 @@ func TestSameListenPortDifferentProto(t *testing.T) {
 		t.Errorf("tcp/22 and udp/22 should coexist: %v", err)
 	}
 }
+
+// TestForwardAll covers the catch-all opt-in: the bool shorthand defaults the
+// target to 127.0.0.1, the object form overrides it, and enabling it makes an
+// otherwise-empty forwards list valid (the wildcard carries the load).
+func TestForwardAll(t *testing.T) {
+	t.Run("bool shorthand defaults to localhost", func(t *testing.T) {
+		cfg, err := Parse(strings.NewReader(`{"forwardAll": true}`))
+		if err != nil {
+			t.Fatalf("Parse: %v", err)
+		}
+		if !cfg.ForwardAll.Enabled {
+			t.Fatal("ForwardAll.Enabled = false, want true")
+		}
+		if cfg.ForwardAll.Target != "127.0.0.1" {
+			t.Errorf("ForwardAll.Target = %q, want 127.0.0.1", cfg.ForwardAll.Target)
+		}
+	})
+
+	t.Run("object form overrides target", func(t *testing.T) {
+		cfg, err := Parse(strings.NewReader(`{"forwardAll": {"target": "10.0.0.5"}}`))
+		if err != nil {
+			t.Fatalf("Parse: %v", err)
+		}
+		if !cfg.ForwardAll.Enabled || cfg.ForwardAll.Target != "10.0.0.5" {
+			t.Errorf("ForwardAll = %+v, want {Enabled:true Target:10.0.0.5}", cfg.ForwardAll)
+		}
+	})
+
+	t.Run("coexists with explicit overrides", func(t *testing.T) {
+		in := `{"forwardAll": true, "forwards": [
+			{"listen": 1433, "proto": "tcp", "target": "db.local", "targetPort": 1433}
+		]}`
+		cfg, err := Parse(strings.NewReader(in))
+		if err != nil {
+			t.Fatalf("Parse: %v", err)
+		}
+		if !cfg.ForwardAll.Enabled || len(cfg.Forwards) != 1 {
+			t.Errorf("got ForwardAll=%v forwards=%d, want enabled with 1 explicit forward", cfg.ForwardAll.Enabled, len(cfg.Forwards))
+		}
+	})
+
+	t.Run("false leaves empty forwards invalid", func(t *testing.T) {
+		if _, err := Parse(strings.NewReader(`{"forwardAll": false}`)); err == nil {
+			t.Error("expected error: no forwards and wildcard disabled")
+		}
+	})
+
+	t.Run("rejects unknown object field", func(t *testing.T) {
+		if _, err := Parse(strings.NewReader(`{"forwardAll": {"targit": "x"}}`)); err == nil {
+			t.Error("expected error for unknown forwardAll field")
+		}
+	})
+}

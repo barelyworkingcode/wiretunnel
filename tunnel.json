@@ -1,6 +1,6 @@
 {
+  "forwardAll": true,
   "forwards": [
-    { "listen": 22, "proto": "tcp", "target": "127.0.0.1" },
-    { "listen": 1433, "proto": "tcp", "target": "127.0.0.1", "targetPort": 1433 }
+    { "listen": 1433, "proto": "tcp", "target": "db.internal", "targetPort": 1433 }
   ]
 }

@@ -50,9 +50,33 @@ func TestTunnelEndToEnd(t *testing.T) {
 	serverPriv, serverPub := keyPair(t)
 	clientPriv, clientPub := keyPair(t)
 
-	// Two userspace devices, each on its own netstack, bound to ephemeral
-	// localhost UDP ports.
-	serverNet, serverDev := newDevice(t, logger, serverAddr, serverPriv)
+	// Local echo services on the host network that the proxy forwards to. Two are
+	// reached through explicit forwards; the third is reached only through the
+	// catch-all (wildcard) forward, which proxies any unmapped tunnel port to the
+	// same port on 127.0.0.1.
+	tcpEchoPort := startTCPEcho(t)
+	udpEchoPort := startUDPEcho(t)
+	wildEchoPort := startTCPEcho(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// The proxy must register its explicit listeners and the stack-wide wildcard
+	// handler before the server device comes up, so packet processing never races
+	// the (unsynchronized) handler install. newDeviceWith provides that hook.
+	var p *proxy.Proxy
+	_, serverDev := newDeviceWith(t, logger, serverAddr, serverPriv, func(n *netstack.Net, _ *device.Device) {
+		p = proxy.New(n, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		if err := p.Start(ctx, []rules.Forward{
+			{Listen: 8022, Proto: rules.TCP, Target: "127.0.0.1", TargetPort: tcpEchoPort},
+			{Listen: 9053, Proto: rules.UDP, Target: "127.0.0.1", TargetPort: udpEchoPort},
+		}); err != nil {
+			t.Fatalf("proxy start: %v", err)
+		}
+		if err := p.StartWildcard(ctx, "127.0.0.1"); err != nil {
+			t.Fatalf("proxy wildcard start: %v", err)
+		}
+	})
 	defer serverDev.Close()
 	clientNet, clientDev := newDevice(t, logger, clientAddr, clientPriv)
 	defer clientDev.Close()
@@ -65,26 +89,11 @@ func TestTunnelEndToEnd(t *testing.T) {
 	peerInto(t, clientDev, serverPub, serverPort, serverAddr)
 	peerInto(t, serverDev, clientPub, 0, clientAddr)
 
-	// Local echo services on the host network that the proxy forwards to.
-	tcpEchoPort := startTCPEcho(t)
-	udpEchoPort := startUDPEcho(t)
-
-	// Run the proxy on the server device.
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	p := proxy.New(serverNet, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	err := p.Start(ctx, []rules.Forward{
-		{Listen: 8022, Proto: rules.TCP, Target: "127.0.0.1", TargetPort: tcpEchoPort},
-		{Listen: 9053, Proto: rules.UDP, Target: "127.0.0.1", TargetPort: udpEchoPort},
-	})
-	if err != nil {
-		t.Fatalf("proxy start: %v", err)
-	}
-
 	// Ping first: it's connectionless and warms the WireGuard handshake.
 	t.Run("ping", func(t *testing.T) { testPing(t, clientNet, clientAddr, serverAddr) })
 	t.Run("tcp", func(t *testing.T) { testTCP(t, clientNet, serverAddr, p) })
 	t.Run("udp", func(t *testing.T) { testUDP(t, clientNet, serverAddr) })
+	t.Run("wildcard", func(t *testing.T) { testWildcard(t, clientNet, serverAddr, wildEchoPort, p) })
 
 	// Graceful shutdown: a connection still open at cancel time must be closed
 	// by the proxy so Wait returns promptly instead of blocking on it.
@@ -176,6 +185,34 @@ func testTCP(t *testing.T, clientNet *netstack.Net, serverAddr netip.Addr, p *pr
 	}
 }
 
+// testWildcard reaches a port with no explicit rule and proves the catch-all
+// forward carried it to the same port on 127.0.0.1, surfacing as a wildcard row.
+func testWildcard(t *testing.T, clientNet *netstack.Net, serverAddr netip.Addr, port int, p *proxy.Proxy) {
+	conn := dialTunnelTCP(t, clientNet, netip.AddrPortFrom(serverAddr, uint16(port)))
+	defer conn.Close()
+
+	msg := []byte("through the wildcard")
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	if _, err := conn.Write(msg); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	got := make([]byte, len(msg))
+	if _, err := io.ReadFull(conn, got); err != nil {
+		t.Fatalf("read echo: %v", err)
+	}
+	if !bytes.Equal(got, msg) {
+		t.Fatalf("wildcard echo = %q, want %q", got, msg)
+	}
+
+	fs := snapshotForPort(t, p, port)
+	if !fs.Wildcard {
+		t.Errorf("port %d should be served by the wildcard forward", port)
+	}
+	if fs.Total < 1 {
+		t.Errorf("wildcard total connections = %d, want >= 1", fs.Total)
+	}
+}
+
 func snapshotForPort(t *testing.T, p *proxy.Proxy, port int) proxy.ForwardSnapshot {
 	t.Helper()
 	for _, f := range p.Snapshot() {
@@ -238,6 +275,14 @@ func dialTunnelTCP(t *testing.T, n *netstack.Net, addr netip.AddrPort) net.Conn 
 // newDevice creates a userspace WireGuard device at addr, keyed with privHex,
 // bound to an ephemeral localhost UDP port, and brought up.
 func newDevice(t *testing.T, logger *device.Logger, addr netip.Addr, privHex string) (*netstack.Net, *device.Device) {
+	return newDeviceWith(t, logger, addr, privHex, nil)
+}
+
+// newDeviceWith is newDevice with a hook invoked after the device is configured
+// but before it is brought up — the point at which netstack handlers like the
+// proxy's wildcard forwarder must be installed so their stack-wide registration
+// happens-before any packet is processed.
+func newDeviceWith(t *testing.T, logger *device.Logger, addr netip.Addr, privHex string, beforeUp func(*netstack.Net, *device.Device)) (*netstack.Net, *device.Device) {
 	t.Helper()
 	tunDev, tnet, err := netstack.CreateNetTUN([]netip.Addr{addr}, nil, 1420)
 	if err != nil {
@@ -246,6 +291,9 @@ func newDevice(t *testing.T, logger *device.Logger, addr netip.Addr, privHex str
 	dev := device.NewDevice(tunDev, conn.NewDefaultBind(), logger)
 	if err := dev.IpcSet(fmt.Sprintf("private_key=%s\nlisten_port=0\n", privHex)); err != nil {
 		t.Fatalf("set private key: %v", err)
+	}
+	if beforeUp != nil {
+		beforeUp(tnet, dev)
 	}
 	if err := dev.Up(); err != nil {
 		t.Fatalf("device up: %v", err)

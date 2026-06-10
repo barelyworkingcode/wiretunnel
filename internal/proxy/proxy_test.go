@@ -4,10 +4,37 @@ import (
 	"bytes"
 	"io"
 	"net"
+	"net/netip"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"golang.zx2c4.com/wireguard/tun/netstack"
+	"gvisor.dev/gvisor/pkg/tcpip/stack"
+	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 )
+
+// TestStackOf guards the unsafe layout pun in stackOf: it must return the real,
+// usable gVisor stack behind a netstack.Net. If wireguard-go ever reorders the
+// leading fields of its netTun, this test fails instead of corrupting memory at
+// runtime.
+func TestStackOf(t *testing.T) {
+	_, tnet, err := netstack.CreateNetTUN([]netip.Addr{netip.MustParseAddr("10.0.0.2")}, nil, 1420)
+	if err != nil {
+		t.Fatalf("create netstack tun: %v", err)
+	}
+
+	s := stackOf(tnet)
+	if s == nil {
+		t.Fatal("stackOf returned nil")
+	}
+	// A real stack accepts a transport handler and reports the NIC the library
+	// created. Both would panic or be empty if the pun pointed at junk.
+	s.SetTransportProtocolHandler(tcp.ProtocolNumber, func(stack.TransportEndpointID, *stack.PacketBuffer) bool { return false })
+	if got := len(s.NICInfo()); got != 1 {
+		t.Errorf("stack NIC count = %d, want 1 — layout pun is likely wrong", got)
+	}
+}
 
 // TestPipeBidirectional verifies pipe relays bytes in both directions between
 // two connections, counts bytes per direction, and tears the bridge down when

@@ -16,6 +16,8 @@ it to verify connectivity.
 - **Unprivileged** — runs as a normal user on macOS and Windows; never touches
   the host network stack.
 - **TCP and UDP forwarding** — per-port rules from a simple JSON file.
+- **Catch-all forwarding** — optionally forward *every* tunnel port to the same
+  port on `127.0.0.1`, so the rules file only carries the exceptions.
 - **Answers ping** — the tunnel address replies to ICMP echo.
 - **Built-in connectivity test** — `-ping` pings any host over the tunnel.
 - **Live dashboard** — `-tui` shows connections, targets, and throughput.
@@ -104,6 +106,42 @@ JSON expansion of the shorthand `{ port, proto, target }`:
 So `{ "listen": 22, "proto": "tcp", "target": "127.0.0.1" }` listens for TCP on
 the tunnel's port 22 and forwards it to the local SSH server.
 
+#### Catch-all forwarding (`forwardAll`)
+
+Listing every port gets tedious when you just want to reach whatever is listening
+on `127.0.0.1`. Set the optional top-level `forwardAll` and any tunnel port
+*without* an explicit rule is proxied to the **same port** on the catch-all target
+(`127.0.0.1` by default) — for both TCP and UDP:
+
+```json
+{
+  "forwardAll": true,
+  "forwards": [
+    { "listen": 1433, "proto": "tcp", "target": "db.internal", "targetPort": 1433 }
+  ]
+}
+```
+
+Here every port maps to `127.0.0.1:<same-port>`, while the `forwards` list is left
+for the exceptions — "remote" forwards that point somewhere other than
+localhost:same-port (above, tunnel `1433` → `db.internal:1433`). **Explicit rules
+always take precedence over the catch-all.**
+
+`forwardAll` accepts either form:
+
+```json
+"forwardAll": true                      // catch-all to 127.0.0.1
+"forwardAll": { "target": "10.0.0.5" }  // catch-all to another host
+```
+
+When `forwardAll` is enabled, the `forwards` list may be empty (or omitted).
+
+> **Security.** The catch-all exposes *every* listening port on the target to every
+> peer that can reach the tunnel address — databases, debug servers, metrics
+> endpoints, and so on. With an explicit list, the rules file is itself an
+> allowlist; `forwardAll` removes that boundary. Enable it only where that blast
+> radius is acceptable, and scope `AllowedIPs` to the peers you trust.
+
 ## Usage
 
 ```sh
@@ -131,8 +169,11 @@ the tunnel's port 22 and forwards it to the local SSH server.
 
   PORT    PROTO  TARGET                    CONNS          UP/s        DOWN/s
   -------------------------------------------------------------------------
-  22      tcp    127.0.0.1:22                  2     12.3 KB/s      1.1 MB/s
-  1433    tcp    127.0.0.1:1433                0         0 B/s         0 B/s
+  1433    tcp    db.internal:1433              0         0 B/s         0 B/s
+  22*     tcp    127.0.0.1:22                  2     12.3 KB/s      1.1 MB/s
+  *       tcp+udp 127.0.0.1:*
+
+  * dynamic port served by the catch-all (wildcard) forward
 
   connections   active 2   total 17
   throughput    now  ↑ 12.3 KB/s   ↓ 1.1 MB/s
@@ -144,6 +185,8 @@ the tunnel's port 22 and forwards it to the local SSH server.
 
 `UP/s` is traffic from the tunnel client toward the target; `DOWN/s` is the
 reply direction. `now` is the last second; `avg` is the average since start.
+Explicit forwards are listed first; ports discovered through the catch-all are
+marked with `*` and the `*` row shows where unmapped ports are sent.
 
 ### Verifying ping
 
@@ -181,8 +224,8 @@ go test -short ./...   # skips the end-to-end tunnel test
 The suite includes config/rules parsing, the relay and byte counters, the
 dashboard formatters, and an **end-to-end test** that stands up two userspace
 WireGuard devices over localhost and verifies TCP forwarding, UDP forwarding,
-ICMP echo replies, live metrics, and graceful shutdown — no privileges or
-external connectivity required.
+catch-all (wildcard) forwarding, ICMP echo replies, live metrics, and graceful
+shutdown — no privileges or external connectivity required.
 
 ## Security & acceptable use
 
@@ -214,8 +257,8 @@ events.go               last-warning/error capture for the dashboard footer
 vt_windows.go           enables ANSI/VT processing on Windows
 vt_other.go             no-op on macOS/Linux
 internal/wgconf/        wg-quick config -> wireguard-go UAPI
-internal/rules/         forwarding rules JSON
+internal/rules/         forwarding rules JSON (incl. forwardAll catch-all)
 internal/tunnel/        userspace WireGuard device + netstack
-internal/proxy/         per-rule listeners, TCP/UDP relays, live metrics
+internal/proxy/         per-rule listeners, catch-all forwarder, relays, metrics
 e2e_test.go             two-device end-to-end tunnel test
 ```

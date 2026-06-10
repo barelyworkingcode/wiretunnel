@@ -8,9 +8,16 @@
 // listens on tunnel port 22 and forwards to 127.0.0.1:22 reachable from the
 // host's normal network. An optional "targetPort" overrides the destination
 // port when it differs from the listen port.
+//
+// An optional top-level "forwardAll" turns on a catch-all: every tunnel port
+// that has no explicit rule is proxied to the same port on a default target
+// (127.0.0.1 unless overridden), so the explicit list is only needed for
+// "remote" forwards that point somewhere other than localhost:same-port.
+// Explicit rules always take precedence over the catch-all.
 package rules
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -48,9 +55,46 @@ func (f Forward) TargetAddr() string {
 	return net.JoinHostPort(f.Target, strconv.Itoa(f.effectiveTargetPort()))
 }
 
+// ForwardAll is the optional catch-all (wildcard) rule. When enabled, any tunnel
+// port without an explicit forward is proxied to Target on the same port — so a
+// connection to <wg-addr>:N is relayed to Target:N on the host network. Explicit
+// forwards always take precedence.
+//
+// In JSON it accepts either a bool or an object:
+//
+//	"forwardAll": true                      // catch-all to 127.0.0.1
+//	"forwardAll": { "target": "10.0.0.5" }  // catch-all to another host
+type ForwardAll struct {
+	Enabled bool
+	Target  string // host to proxy to; defaults to 127.0.0.1 when enabled
+}
+
+// UnmarshalJSON accepts the bool shorthand or the object form.
+func (fa *ForwardAll) UnmarshalJSON(b []byte) error {
+	// Bool shorthand: `"forwardAll": true`.
+	var enabled bool
+	if err := json.Unmarshal(b, &enabled); err == nil {
+		fa.Enabled = enabled
+		return nil
+	}
+	// Object form: `"forwardAll": { "target": "host" }`.
+	var obj struct {
+		Target string `json:"target"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&obj); err != nil {
+		return fmt.Errorf("parse forwardAll: %w", err)
+	}
+	fa.Enabled = true
+	fa.Target = obj.Target
+	return nil
+}
+
 // Config is the parsed rules file.
 type Config struct {
-	Forwards []Forward `json:"forwards"`
+	ForwardAll ForwardAll `json:"forwardAll"`
+	Forwards   []Forward  `json:"forwards"`
 }
 
 // ParseFile reads and parses the rules JSON at path.
@@ -78,8 +122,11 @@ func Parse(r io.Reader) (*Config, error) {
 }
 
 func (c *Config) validate() error {
-	if len(c.Forwards) == 0 {
-		return fmt.Errorf("no forwards defined")
+	if c.ForwardAll.Enabled && c.ForwardAll.Target == "" {
+		c.ForwardAll.Target = "127.0.0.1"
+	}
+	if len(c.Forwards) == 0 && !c.ForwardAll.Enabled {
+		return fmt.Errorf("no forwards defined (set forwards or enable forwardAll)")
 	}
 	seen := make(map[string]bool, len(c.Forwards))
 	for i, f := range c.Forwards {

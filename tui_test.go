@@ -1,9 +1,45 @@
 package main
 
 import (
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/barelyworkingcode/wiretunnel/internal/proxy"
 )
+
+// TestBuildFrameWildcard checks that a dynamically-discovered wildcard port is
+// rendered (marked with *), that the catch-all destination line appears, and
+// that rates are matched to the prior frame by (proto, port) rather than slice
+// position — a wildcard row inserted above an explicit one must not steal its rate.
+func TestBuildFrameWildcard(t *testing.T) {
+	prev := []proxy.ForwardSnapshot{
+		{Listen: 22, Proto: "tcp", Target: "127.0.0.1:22", BytesUp: 100, BytesDown: 200},
+	}
+	cur := []proxy.ForwardSnapshot{
+		{Listen: 22, Proto: "tcp", Target: "127.0.0.1:22", Active: 1, BytesUp: 100, BytesDown: 200},
+		{Listen: 8080, Proto: "tcp", Target: "127.0.0.1:8080", Wildcard: true, Active: 2, BytesUp: 1100, BytesDown: 200},
+	}
+
+	frame := buildFrame(cur, prev, 1.0, time.Minute, "10.0.0.2", "127.0.0.1", nil)
+
+	if !strings.Contains(frame, "8080*") {
+		t.Errorf("wildcard port not marked with *:\n%s", frame)
+	}
+	if !strings.Contains(frame, "127.0.0.1:*") {
+		t.Errorf("catch-all destination line missing:\n%s", frame)
+	}
+	if !strings.Contains(frame, "dynamic port served by the catch-all") {
+		t.Errorf("wildcard footnote missing:\n%s", frame)
+	}
+	// Port 22 was unchanged frame-to-frame, so its UP/s must read 0 — proving the
+	// new 8080 row (with +1000 bytes) did not shift port 22's prev match.
+	for _, line := range strings.Split(frame, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "22 ") && !strings.Contains(line, "0 B/s") {
+			t.Errorf("port 22 should show 0 B/s up (unchanged), got: %q", line)
+		}
+	}
+}
 
 func TestHumanBytes(t *testing.T) {
 	cases := []struct {
