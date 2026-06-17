@@ -311,12 +311,24 @@ function startTerminal() {
     if (ws && ws.readyState === WebSocket.OPEN) ws.send(encoder.encode(d));
   };
 
+  // clearRunParam drops ?run=<id> from the address bar once we've committed to
+  // running the shortcut, so a full page reload re-attaches to the same shell
+  // (via ?session=) without re-typing the command. The in-memory ranShortcut
+  // guard only survives reconnects, not reloads — the URL has to forget it too.
+  function clearRunParam() {
+    const url = new URL(location.href);
+    if (!url.searchParams.has("run")) return;
+    url.searchParams.delete("run");
+    history.replaceState(null, "", url.pathname + url.search + url.hash);
+  }
+
   // maybeRunShortcut, on the first successful connect of a ?run=<id> tab, fetches
   // that stored shortcut and types its command at the prompt. The fetch round
   // trip also gives the freshly spawned shell a moment to print its prompt first.
   async function maybeRunShortcut() {
     if (!runShortcutId || ranShortcut) return;
     ranShortcut = true; // set before awaiting so a reconnect can't double-fire
+    clearRunParam();    // ...and forget it in the URL so a reload won't re-run it
     try {
       const res = await fetch("/api/shortcuts", { headers: { Accept: "application/json" } });
       if (!res.ok) return;
