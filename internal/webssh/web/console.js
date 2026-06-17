@@ -409,7 +409,7 @@ function renderSessions(sessions) {
   const table = document.createElement("table");
   const thead = document.createElement("thead");
   thead.innerHTML =
-    "<tr><th>Session</th><th>State</th>" +
+    "<tr><th>Session</th><th>Title</th><th>State</th>" +
     '<th style="text-align:right">Conns</th>' +
     '<th style="text-align:right">Idle</th>' +
     '<th style="text-align:right">Age</th>' +
@@ -425,6 +425,19 @@ function renderSessions(sessions) {
     idTd.textContent = s.id.length > 12 ? s.id.slice(0, 12) + "…" : s.id;
     idTd.title = s.id;
     tr.appendChild(idTd);
+
+    // Window title the shell/program set (OSC 0/2). Empty for shells that never
+    // set one; the full title is on the hover tooltip when it's truncated.
+    const titleTd = document.createElement("td");
+    titleTd.className = "title-cell";
+    if (s.title) {
+      titleTd.textContent = s.title;
+      titleTd.title = s.title;
+    } else {
+      titleTd.textContent = "—";
+      titleTd.classList.add("empty-title");
+    }
+    tr.appendChild(titleTd);
 
     const stateTd = document.createElement("td");
     stateTd.appendChild(badge(s.state));

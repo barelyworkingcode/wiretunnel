@@ -69,6 +69,38 @@ func TestSnapshotBusyIdle(t *testing.T) {
 	}
 }
 
+// TestTitleScanner exercises the OSC title parser: BEL- and ST-terminated
+// sequences, both title codes, sequences split across feeds, and non-title OSC
+// codes that must be ignored.
+func TestTitleScanner(t *testing.T) {
+	// Whole sequence in one feed, BEL-terminated, OSC 0.
+	var ts titleScanner
+	if title, ok := ts.feed([]byte("out \x1b]0;hello\x07more")); !ok || title != "hello" {
+		t.Fatalf("OSC 0 + BEL: got (%q, %v), want (\"hello\", true)", title, ok)
+	}
+
+	// OSC 2 terminated by ST (ESC \) instead of BEL.
+	ts = titleScanner{}
+	if title, ok := ts.feed([]byte("\x1b]2;C:\\work\x1b\\")); !ok || title != `C:\work` {
+		t.Fatalf("OSC 2 + ST: got (%q, %v), want (%q, true)", title, ok, `C:\work`)
+	}
+
+	// A sequence split across two feeds is still recognized.
+	ts = titleScanner{}
+	if _, ok := ts.feed([]byte("\x1b]0;par")); ok {
+		t.Fatal("incomplete sequence should not yield a title yet")
+	}
+	if title, ok := ts.feed([]byte("tial\x07")); !ok || title != "partial" {
+		t.Fatalf("split sequence: got (%q, %v), want (\"partial\", true)", title, ok)
+	}
+
+	// Non-title OSC codes (here OSC 8 hyperlink) are parsed but ignored.
+	ts = titleScanner{}
+	if title, ok := ts.feed([]byte("\x1b]8;;https://x\x07")); ok {
+		t.Fatalf("OSC 8 should be ignored, got title %q", title)
+	}
+}
+
 // TestKill terminates a live session and reports correctly on a missing one.
 func TestKill(t *testing.T) {
 	m := NewManager(Config{Shell: testShell(), Scrollback: 1 << 16, MaxSessions: 10})

@@ -185,6 +185,13 @@ function startTerminal() {
   fit.fit();
   term.focus();
 
+  // Reflect the shell/program's window title (OSC 0/2) in the browser tab, so a
+  // tab running a long job — or sitting in a particular directory — is
+  // identifiable at a glance among a row of open terminals.
+  term.onTitleChange((t) => {
+    document.title = t ? t + " — WebSSH" : "WebSSH";
+  });
+
   // Cmd/Ctrl-click a URL in the output to open it in a new tab.
   setupTerminalLinks(term);
 
@@ -255,7 +262,7 @@ function startTerminal() {
     ws.binaryType = "arraybuffer";
 
     ws.onopen = () => {
-      if (reconnectAttempts > 0) term.write("\r\n\x1b[32m[reconnected]\x1b[0m\r\n");
+      if (reconnectAttempts > 0) termWrite("\r\n\x1b[32m[reconnected]\x1b[0m\r\n");
       reconnectAttempts = 0;
       sendResize();
       startPing();
@@ -267,12 +274,12 @@ function startTerminal() {
         try {
           const m = JSON.parse(e.data);
           if (m.type === "exit") sessionEnded = true;
-          else if (m.type === "error") term.write(`\r\n\x1b[31m[${m.message || "error"}]\x1b[0m\r\n`);
+          else if (m.type === "error") termWrite(`\r\n\x1b[31m[${m.message || "error"}]\x1b[0m\r\n`);
           else if (m.type === "pong") updateLatency(m.t);
         } catch (_) {}
         return;
       }
-      term.write(new Uint8Array(e.data));
+      termWrite(new Uint8Array(e.data));
     };
     ws.onclose = () => {
       stopPing();
@@ -283,13 +290,14 @@ function startTerminal() {
         // fall back to a message once it's clear the close was ignored.
         window.close();
         setTimeout(() => {
+          flushWrites(); // surface any held output, then the final notice (direct: session is over)
           term.write("\r\n\x1b[31m[session ended — reload for a new shell]\x1b[0m\r\n");
         }, 300);
         return;
       }
       reconnectAttempts++;
       if (reconnectAttempts > 30) {
-        term.write("\r\n\x1b[31m[disconnected]\x1b[0m\r\n");
+        termWrite("\r\n\x1b[31m[disconnected]\x1b[0m\r\n");
         return;
       }
       clearTimeout(reconnectTimer);
@@ -369,11 +377,71 @@ function startTerminal() {
         );
       }
     } catch (err) {
-      term.write("\r\n\x1b[31m[image upload failed]\x1b[0m\r\n");
+      termWrite("\r\n\x1b[31m[image upload failed]\x1b[0m\r\n");
     }
   }
 
   const termEl = document.getElementById("terminal");
+
+  // --- selection-friendly output ----------------------------------------
+  //
+  // This xterm build uses the DOM renderer, whose "selection" is the browser's
+  // native selection anchored to the row elements. Any repaint of the rows under
+  // a selection destroys those nodes, so the browser collapses the selection and
+  // xterm clears it — which is why a highlight won't "stick" while output flows
+  // (a redrawing prompt, a tmux/powerline status line, a TUI, streaming output).
+  // The latency readout is unrelated: it's a separate fixed, pointer-events:none
+  // badge, and updating its text never touches the terminal rows.
+  //
+  // Two guards make highlight-to-copy reliable:
+  //  1. While text is selected, hold incoming output and flush it in order once
+  //     the selection clears, so nothing repaints out from under the highlight.
+  //  2. Copy the selection to the clipboard the instant a drag finishes, so the
+  //     text is captured even if some later repaint does collapse the highlight.
+  let writeQueue = [];
+  let queuedBytes = 0;
+  const MAX_QUEUED_BYTES = 4 * 1024 * 1024; // output integrity wins over a held selection
+
+  function flushWrites() {
+    if (!writeQueue.length) return;
+    const q = writeQueue;
+    writeQueue = [];
+    queuedBytes = 0;
+    for (const d of q) term.write(d);
+  }
+
+  // termWrite is the single sink for everything we paint: it defers to the queue
+  // while a selection is held, except past a hard byte cap, where keeping output
+  // flowing matters more than preserving one selection during a flood.
+  function termWrite(data) {
+    if (term.hasSelection()) {
+      writeQueue.push(data);
+      queuedBytes += data.length || 0;
+      if (queuedBytes > MAX_QUEUED_BYTES) {
+        term.clearSelection(); // fires onSelectionChange below, which also flushes
+        flushWrites();
+      }
+      return;
+    }
+    term.write(data);
+  }
+
+  // The moment a selection clears (deselect, a keystroke, or a programmatic
+  // clear), release everything we held back.
+  term.onSelectionChange(() => {
+    if (!term.hasSelection()) flushWrites();
+  });
+
+  // Copy-on-select: grab the highlight as soon as the drag ends. mouseup is a
+  // user gesture, so the clipboard write is allowed in this secure context; we
+  // listen on the document so a drag that ends outside the terminal still copies.
+  document.addEventListener("mouseup", () => {
+    if (!term.hasSelection()) return;
+    const sel = term.getSelection();
+    if (sel && navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(sel).catch(() => {});
+    }
+  });
 
   // Pasting an image (e.g. a screenshot). Text pastes are left to xterm. When
   // the clipboard offers several formats, prefer lossless PNG.

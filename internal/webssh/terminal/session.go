@@ -1,6 +1,7 @@
 package terminal
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
@@ -99,6 +100,11 @@ type Session struct {
 	createdAt  time.Time
 	lastActive time.Time // last attach/detach/keystroke; drives idle reaping
 	lastOutput time.Time // last PTY output; drives busy/idle reporting
+	title      string    // latest OSC 0/2 window title from PTY output
+
+	// titleScan parses OSC title sequences out of the PTY stream. It is touched
+	// only by outputPump (the lone reader of the PTY), so it needs no lock.
+	titleScan titleScanner
 
 	closeOnce sync.Once
 }
@@ -137,9 +143,15 @@ func (s *Session) outputPump() {
 		n, err := s.ptmx.Read(buf)
 		if n > 0 {
 			chunk := append([]byte(nil), buf[:n]...)
+			// Sniff the chunk for a window-title update before locking: the
+			// scanner is single-goroutine state, so it stays outside s.mu.
+			title, gotTitle := s.titleScan.feed(chunk)
 			s.mu.Lock()
 			s.appendOutput(chunk)
 			s.lastOutput = time.Now()
+			if gotTitle {
+				s.title = title
+			}
 			s.broadcast(outMsg{websocket.BinaryMessage, chunk})
 			s.mu.Unlock()
 		}
@@ -320,6 +332,7 @@ func (m *Manager) remove(id string, s *Session) {
 // admin console.
 type SessionInfo struct {
 	ID          string `json:"id"`
+	Title       string `json:"title"`       // latest window title the shell/program set (OSC 0/2)
 	Connections int    `json:"connections"` // websockets currently attached
 	State       string `json:"state"`       // "busy" or "idle"
 	IdleSeconds int    `json:"idleSeconds"` // seconds since the last PTY output
@@ -338,6 +351,7 @@ func (m *Manager) Snapshot() []SessionInfo {
 		conns := len(s.clients)
 		sinceOut := now.Sub(s.lastOutput)
 		age := now.Sub(s.createdAt)
+		title := s.title
 		s.mu.Unlock()
 		state := "idle"
 		if sinceOut < busyWindow {
@@ -345,6 +359,7 @@ func (m *Manager) Snapshot() []SessionInfo {
 		}
 		out = append(out, SessionInfo{
 			ID:          id,
+			Title:       title,
 			Connections: conns,
 			State:       state,
 			IdleSeconds: int(sinceOut.Seconds()),
@@ -409,5 +424,96 @@ func (m *Manager) reaper() {
 		for _, s := range victims {
 			s.shutdown(false)
 		}
+	}
+}
+
+// titleScanner extracts the window title from a PTY byte stream as it arrives in
+// arbitrary chunks. A terminal sets its title with OSC 0 (icon name + title) or
+// OSC 2 (title): "ESC ] 0 ; <text> BEL" — or terminated by ST ("ESC \") instead
+// of BEL. ConPTY on Windows emits these when the console title changes, as do
+// shells and TUIs (vim, tmux, oh-my-posh, …) everywhere. The scanner is a tiny
+// state machine, so a sequence split across two reads is still recognized.
+type titleScanner struct {
+	state titleState
+	buf   []byte // OSC payload accumulated after "ESC ]"
+}
+
+type titleState int
+
+const (
+	titleNormal titleState = iota // ordinary output
+	titleEsc                      // saw ESC
+	titleOSC                      // inside "ESC ] …", collecting the payload
+	titleOSCEsc                   // inside OSC, saw ESC (maybe the ST terminator)
+)
+
+// maxTitleLen caps the buffered payload so a stream that opens an OSC and never
+// terminates it cannot grow the buffer without bound.
+const maxTitleLen = 1024
+
+// feed consumes a chunk and returns the most recent complete title found in it,
+// if any. Only OSC 0 and OSC 2 (the title codes) yield a title; other OSC
+// sequences (colors, hyperlinks, clipboard, …) are parsed through and ignored.
+func (ts *titleScanner) feed(p []byte) (title string, found bool) {
+	for _, b := range p {
+		switch ts.state {
+		case titleNormal:
+			if b == 0x1b {
+				ts.state = titleEsc
+			}
+		case titleEsc:
+			switch b {
+			case ']':
+				ts.state = titleOSC
+				ts.buf = ts.buf[:0]
+			case 0x1b:
+				// A run of ESCs: stay armed for the next byte.
+			default:
+				ts.state = titleNormal
+			}
+		case titleOSC:
+			switch b {
+			case 0x07: // BEL terminates the OSC
+				if t, ok := parseTitleOSC(ts.buf); ok {
+					title, found = t, true
+				}
+				ts.state = titleNormal
+			case 0x1b:
+				ts.state = titleOSCEsc
+			default:
+				if len(ts.buf) < maxTitleLen {
+					ts.buf = append(ts.buf, b)
+				}
+			}
+		case titleOSCEsc:
+			switch b {
+			case '\\': // ESC \ = ST, also terminates the OSC
+				if t, ok := parseTitleOSC(ts.buf); ok {
+					title, found = t, true
+				}
+				ts.state = titleNormal
+			case 0x1b:
+				// Another ESC: ST may still follow.
+			default:
+				// ESC then a non-'\' byte: this OSC is malformed, abandon it.
+				ts.state = titleNormal
+			}
+		}
+	}
+	return title, found
+}
+
+// parseTitleOSC interprets an OSC payload "Ps;Pt", returning Pt when Ps selects
+// a title (0 = icon name + title, 2 = title). Any other code returns ok=false.
+func parseTitleOSC(buf []byte) (string, bool) {
+	i := bytes.IndexByte(buf, ';')
+	if i < 0 {
+		return "", false
+	}
+	switch string(buf[:i]) {
+	case "0", "2":
+		return string(buf[i+1:]), true
+	default:
+		return "", false
 	}
 }
